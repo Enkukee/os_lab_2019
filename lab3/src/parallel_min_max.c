@@ -40,34 +40,37 @@ int main(int argc, char **argv) {
         switch (option_index) {
           case 0:
             seed = atoi(optarg);
-            // your code here
-            // error handling
+            if (seed <= 0) {
+              printf("seed must be a positive number\n");
+              return 1;
+            }
             break;
           case 1:
             array_size = atoi(optarg);
-            // your code here
-            // error handling
+            if (array_size <= 0) {
+              printf("array_size must be a positive number\n");
+              return 1;
+            }
             break;
           case 2:
             pnum = atoi(optarg);
-            // your code here
-            // error handling
+            if (pnum <= 0) {
+              printf("pnum must be a positive number\n");
+              return 1;
+            }
             break;
           case 3:
             with_files = true;
             break;
-
-          defalut:
+          default:
             printf("Index %d is out of options\n", option_index);
         }
         break;
       case 'f':
         with_files = true;
         break;
-
       case '?':
         break;
-
       default:
         printf("getopt returned character code 0%o?\n", c);
     }
@@ -91,33 +94,70 @@ int main(int argc, char **argv) {
   struct timeval start_time;
   gettimeofday(&start_time, NULL);
 
+  // Создаём pipe для каждого дочернего процесса (2 fd на процесс: read и write)
+  int pipes[pnum][2];
   for (int i = 0; i < pnum; i++) {
-    pid_t child_pid = fork();
-    if (child_pid >= 0) {
-      // successful fork
-      active_child_processes += 1;
-      if (child_pid == 0) {
-        // child process
-
-        // parallel somehow
-
-        if (with_files) {
-          // use files here
-        } else {
-          // use pipe here
-        }
-        return 0;
-      }
-
-    } else {
-      printf("Fork failed!\n");
+    if (pipe(pipes[i]) == -1) {
+      printf("Pipe failed!\n");
+      free(array);
       return 1;
     }
   }
 
-  while (active_child_processes > 0) {
-    // your code here
+  for (int i = 0; i < pnum; i++) {
+    pid_t child_pid = fork();
+    if (child_pid >= 0) {
+      active_child_processes += 1;
+      if (child_pid == 0) {
+        // === Дочерний процесс ===
 
+        // Закрываем ненужные концы pipe (родительские read)
+        for (int j = 0; j < pnum; j++) {
+          close(pipes[j][0]);
+        }
+
+        // Делим массив на части
+        int part_size = array_size / pnum;
+        int begin = i * part_size;
+        int end = (i == pnum - 1) ? array_size : begin + part_size;
+
+        // Ищем min/max в своей части
+        struct MinMax min_max = GetMinMax(array, begin, end);
+
+        if (with_files) {
+          // === Задание 2: используем файлы ===
+          char filename[256];
+          sprintf(filename, "/tmp/lab3_child_%d.txt", i);
+          FILE *f = fopen(filename, "w");
+          if (f == NULL) {
+            printf("Cannot open file for writing\n");
+            return 1;
+          }
+          fprintf(f, "%d %d", min_max.min, min_max.max);
+          fclose(f);
+        } else {
+          // === Задание 3: используем pipe ===
+          write(pipes[i][1], &min_max.min, sizeof(int));
+          write(pipes[i][1], &min_max.max, sizeof(int));
+        }
+
+        // Закрываем write конец pipe
+        close(pipes[i][1]);
+        free(array);
+        return 0;
+      }
+      // Родитель закрывает write конец pipe (он только читает)
+      close(pipes[i][1]);
+    } else {
+      printf("Fork failed!\n");
+      free(array);
+      return 1;
+    }
+  }
+
+  // Ждём завершения всех дочерних процессов
+  while (active_child_processes > 0) {
+    wait(NULL);
     active_child_processes -= 1;
   }
 
@@ -130,9 +170,22 @@ int main(int argc, char **argv) {
     int max = INT_MIN;
 
     if (with_files) {
-      // read from files
+      // === Читаем из файлов ===
+      char filename[256];
+      sprintf(filename, "/tmp/lab3_child_%d.txt", i);
+      FILE *f = fopen(filename, "r");
+      if (f == NULL) {
+        printf("Cannot open file for reading\n");
+        free(array);
+        return 1;
+      }
+      fscanf(f, "%d %d", &min, &max);
+      fclose(f);
     } else {
-      // read from pipes
+      // === Читаем из pipe ===
+      read(pipes[i][0], &min, sizeof(int));
+      read(pipes[i][0], &max, sizeof(int));
+      close(pipes[i][0]);
     }
 
     if (min < min_max.min) min_max.min = min;
